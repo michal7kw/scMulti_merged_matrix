@@ -1,0 +1,10 @@
+*.cloupe
+filtered_feature_bc_matrix/
+cache/
+process_converted_adata.py
+aggr.csv
+projections.csv
+umap_projection.csv
+Velocity.pdf
+out/
+*.h5ad
