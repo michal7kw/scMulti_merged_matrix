@@ -446,6 +446,10 @@ sc.pl.violin(adata_wt, available_genes, groupby='leiden',
              save=f'_wt_snrpn_snord_violin.png')
 
 # %%
+global_max = adata_wt[:, :].X.toarray().flatten().max()
+print(f"Global Mean expression: {global_max:.3f}")
+
+# %%
 # Summary statistics
 print("\nExpression summary statistics (WT nuclei only):")
 for gene in available_genes:
@@ -460,37 +464,125 @@ for gene in available_genes:
     print(f"  Mean expression: {mean_expr:.3f}")
     print(f"  Max expression: {max_expr:.3f}")
 
-
 # %%
 # Create comparison plot between WT and mutant if both are present
-if 'Ube3a_mut_brain_cortex' in adata.obs['LibraryID'].values and len(available_genes) > 0:
-    print("\nCreating comparison between WT and Ube3a mutant...")
+print("\nCreating comparison between WT and Ube3a mutant...")
+
+# Create a combined plot for specific gene
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+for i, condition in enumerate(['WT_brain_cortex', 'Ube3a_mut_brain_cortex']):
+    condition_mask = adata.obs['LibraryID'] == condition
+    adata_condition = adata[condition_mask, :].copy()
     
-    # Create a combined plot
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    
-    for i, condition in enumerate(['WT_brain_cortex', 'Ube3a_mut_brain_cortex']):
-        condition_mask = adata.obs['LibraryID'] == condition
-        adata_condition = adata[condition_mask, :].copy()
+    # Plot first available gene
+    gene = available_genes[0]
+    if gene in adata_condition.var_names:
+        # Get expression of target gene across ALL cells (including zeros)
+        gene_expr = adata_condition[:, gene].X.toarray().flatten()
         
-        # Plot first available gene
+        # Calculate mean expression of all genes, excluding genes with zero expression
+        if hasattr(adata_condition.X, 'A1'):
+            all_gene_means = np.array(adata_condition.X.mean(axis=0)).flatten()
+        else:
+            all_gene_means = adata_condition.X.mean(axis=0)
+        
+        # Filter out genes with zero mean expression
+        expressed_genes_means = all_gene_means[all_gene_means > 0]
+        
+        # Get mean expression of our target gene ONLY in expressing cells
+        expressing_cells_mask = gene_expr > 0
+        target_gene_mean = np.mean(gene_expr[expressing_cells_mask]) if expressing_cells_mask.sum() > 0 else 0
+        
+        # Calculate percentile rank of target gene among expressed genes only
+        if target_gene_mean > 0:
+            gene_rank_percentile = (expressed_genes_means < target_gene_mean).sum() / len(expressed_genes_means) * 100
+        else:
+            gene_rank_percentile = 0
+        
+        # Plot histogram of target gene expression across ALL cells
+        axes[i].hist(gene_expr, bins=50, alpha=0.7,
+                    color='lightgreen', edgecolor='black',
+                    label=f'{gene}')
+        
+        # Add vertical lines for comparison
+        if target_gene_mean > 0:
+            axes[i].axvline(target_gene_mean, color='red', linestyle='--',
+                            label=f'{gene} mean (expressing): {target_gene_mean:.3f}')
+        axes[i].axvline(np.mean(expressed_genes_means), color='blue', linestyle='--',
+                        label=f'Expressed genes mean: {np.mean(expressed_genes_means):.3f}')
+        
+        axes[i].set_xlabel(f'{gene} expression (log counts)')
+        axes[i].set_ylabel('Number of cells')
+        axes[i].set_title(f'{gene} vs Expressed Genes - {condition.replace("_", " ").title()}')
+        axes[i].legend()
+        
+        # Add text with comparison statistics
+        expressing_cells = expressing_cells_mask.sum()
+        total_cells = len(adata_condition)
+        expressing_pct = (expressing_cells / total_cells) * 100
+        
+        stats_text = f'Cells expressing: {expressing_cells}/{total_cells} ({expressing_pct:.1f}%)\n'
+        if target_gene_mean > 0:
+            stats_text += f'Gene rank: {gene_rank_percentile:.1f}th percentile\n'
+            stats_text += f'Mean expr ratio: {target_gene_mean/np.mean(expressed_genes_means):.2f}x\n'
+        else:
+            stats_text += f'Gene not expressed\n'
+        stats_text += f'Expressed genes: {len(expressed_genes_means)}/{len(all_gene_means)}'
+        
+        axes[i].text(0.05, 0.95, stats_text,
+                    transform=axes[i].transAxes, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+plt.tight_layout()
+plt.savefig(f'figures/wt_vs_mut_{available_genes[0]}_comparison.png',
+            dpi=300, bbox_inches='tight')
+plt.show()
+
+
+# %%
+
+# Print detailed gene expression comparison
+print(f"\nDetailed expression comparison for {available_genes[0]}:")
+for condition in ['WT_brain_cortex', 'Ube3a_mut_brain_cortex']:
+    condition_mask = adata.obs['LibraryID'] == condition
+    adata_condition = adata[condition_mask, :].copy()
+    
+    if len(adata_condition) > 0:
         gene = available_genes[0]
         if gene in adata_condition.var_names:
             gene_expr = adata_condition[:, gene].X.toarray().flatten()
             
-            axes[i].hist(gene_expr[gene_expr > 0], bins=30, alpha=0.7,
-                        label=f'{condition}\n({(gene_expr > 0).sum()} expressing cells)')
-            axes[i].set_xlabel(f'{gene} expression')
-            axes[i].set_ylabel('Number of cells')
-            axes[i].set_title(f'{gene} in {condition}')
-            axes[i].legend()
-    
-    plt.tight_layout()
-    plt.savefig(f'figures/wt_vs_mut_{available_genes[0]}_comparison.png',
-                dpi=300, bbox_inches='tight')
-    plt.show()
+            # Calculate all gene means for comparison, excluding zero-expression genes
+            if hasattr(adata_condition.X, 'A1'):
+                all_gene_means = np.array(adata_condition.X.mean(axis=0)).flatten()
+            else:
+                all_gene_means = adata_condition.X.mean(axis=0)
+            
+            # Filter out genes with zero mean expression
+            expressed_genes_means = all_gene_means[all_gene_means > 0]
+            
+            # Calculate target gene mean only in expressing cells
+            expressing_cells_mask = gene_expr > 0
+            target_gene_mean = np.mean(gene_expr[expressing_cells_mask]) if expressing_cells_mask.sum() > 0 else 0
+            
+            if target_gene_mean > 0:
+                gene_rank = (expressed_genes_means < target_gene_mean).sum()
+                percentile = (gene_rank / len(expressed_genes_means)) * 100
+            else:
+                gene_rank = 0
+                percentile = 0
+            
+            print(f"\n{condition.replace('_', ' ').title()}:")
+            print(f"  Cells expressing {gene}: {expressing_cells_mask.sum()}/{len(gene_expr)} ({expressing_cells_mask.sum()/len(gene_expr)*100:.1f}%)")
+            if target_gene_mean > 0:
+                print(f"  {gene} mean expression (expressing cells only): {target_gene_mean:.4f}")
+                print(f"  Expressed genes mean: {np.mean(expressed_genes_means):.4f}")
+                print(f"  {gene} rank among expressed genes: {gene_rank}/{len(expressed_genes_means)} ({percentile:.1f}th percentile)")
+                print(f"  Expression ratio vs expressed genes average: {target_gene_mean/np.mean(expressed_genes_means):.2f}x")
+            else:
+                print(f"  {gene} is not expressed in this condition")
+            print(f"  Total genes in dataset: {len(all_gene_means)}")
+            print(f"  Expressed genes: {len(expressed_genes_means)} ({len(expressed_genes_means)/len(all_gene_means)*100:.1f}%)")
 
 
-
-
-# %%
