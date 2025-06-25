@@ -1,12 +1,12 @@
 Metric,Value
-Total cells (initial),10395
-Total cells (filtered),9800
-Cells removed,595
-Percent cells removed,5.7%
+Total cells (initial),5318
+Total cells (filtered),5010
+Cells removed,308
+Percent cells removed,5.8%
 Total genes (initial),32285
-Total genes (filtered),26276
-n_genes threshold (lower),1555
-n_genes threshold (upper),11259
-total_counts threshold (lower),2969
-total_counts threshold (upper),230975
+Total genes (filtered),25219
+n_genes threshold (lower),1524
+n_genes threshold (upper),11413
+total_counts threshold (lower),2918
+total_counts threshold (upper),230919
 MT% threshold,20.00%

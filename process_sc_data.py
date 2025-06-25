@@ -4,13 +4,15 @@ import pandas as pd
 import numpy as np
 import scanpy as sc
 import matplotlib.pyplot as plt
+import re
 
 # %% [markdown]
-# # --- 1. Settings ---
+# # --- Settings ---
 
 # %%
 
-script_dir = "/beegfs/scratch/ric.broccoli/kubacki.michal/scMulti_merged_matrix"
+# script_dir = "/beegfs/scratch/ric.broccoli/kubacki.michal/scMulti_merged_matrix"
+script_dir = "D:/Github/scMulti_merged_matrix"
 os.chdir(script_dir)
 print(f"Working directory set to: {script_dir}")
 
@@ -21,7 +23,7 @@ sc.settings.verbosity = 3
 sc.settings.set_figure_params(dpi=80, facecolor='white')
 
 # %% [markdown]
-# # --- 2. Load Data ---
+# # --- Load Data ---
 
 # %%
 print("Loading data...")
@@ -39,8 +41,41 @@ print("Data loaded successfully.")
 print(adata)
 
 # %%
-import re
+##################################################### Temp #####################################################
+target_gene = 'RBFOX3' # Also known as NeuN
+gene_present = False
 
+if target_gene in adata.var_names:
+    print(f"Gene '{target_gene}' found in the dataset.")
+    gene_present = True
+else:
+    # Check for case variations or common aliases if any
+    print(f"Gene '{target_gene}' not found with exact match.")
+    # Attempt to find variations including common synonyms and species-specific names
+    possible_variations = [
+        target_gene.lower(),           # rbfox3
+        target_gene.upper(),           # RBFOX3
+        target_gene.capitalize(),      # Rbfox3
+        'Rbfox3',                      # Common mouse gene name
+        'rbfox3',                      # Lowercase mouse
+        'RBFOX3',                      # Human uppercase
+        'Rbfox3'                       # Human/Mouse mixed case
+    ]
+
+    for var in possible_variations:
+        if var in adata.var_names:
+            print(f"Found alternative name: '{var}'. Using this for analysis.")
+            target_gene = var
+            gene_present = True
+            break
+    if not gene_present:
+        print(f"Gene '{target_gene}' and its common variations not found in adata.var_names.")
+        print("Available genes (first 100):")
+        print(list(adata.var_names[:100]))
+##################################################### Temp #####################################################
+
+# %%
+##################################################### Temp #####################################################
 # Check if SNRPN and snord116 genes are present in the dataset
 target_genes = ['SNRPN', 'snord116', 'Snrpn', 'Snord116']
 target_patterns = ['SNRPN*', 'snord116*', 'Snrpn*', 'Snord116*']  # Patterns to check
@@ -82,7 +117,6 @@ for pattern in target_patterns:
 print(f"\nTotal unique genes found: {len(available_genes)}")
 print(f"All found genes: {available_genes}")
 
-# %%
 # Also search for partial matches
 print("\nSearching for genes containing 'snrpn' or 'snord'...")
 snrpn_like = adata.var_names[adata.var_names.str.contains('snrpn', case=False, na=False)]
@@ -94,14 +128,38 @@ if len(snrpn_like) > 0:
 if len(snord_like) > 0:
     print(f"SNORD-like genes found: {list(snord_like)}")
     available_genes.extend(snord_like)
+##################################################### Temp #####################################################
 
 # %%
-# Remove duplicates
-available_genes = list(set(available_genes))
-available_genes
+available_genes = ['Snrpn', 'Rbfox3']
 
 # %% [markdown]
-# # --- 3. Preprocessing and Quality Control (QC) ---
+# # --- Add Metadata from the Downloaded CSV File ---
+
+# %%
+metadata_csv_file = './LibraryID.csv'
+
+# %%
+print(f"\n--- Step 8: Loading metadata from '{metadata_csv_file}' ---")
+metadata_df = pd.read_csv(metadata_csv_file)
+metadata_df.set_index('Barcode', inplace=True)
+adata.obs = adata.obs.join(metadata_df)
+
+if 'LibraryID' not in adata.obs.columns:
+    raise ValueError("'LibraryID' column not found after loading CSV.")
+if adata.obs['LibraryID'].isnull().any():
+    n_missing = adata.obs['LibraryID'].isnull().sum()
+    print(f"WARNING: {n_missing} cells did not have a matching barcode in the CSV file.")
+
+print("\nSuccessfully added metadata from CSV. New adata.obs:")
+print(adata.obs.head())
+
+# %%
+condition_mask = adata.obs['LibraryID'] == 'WT_brain_cortex'
+adata= adata[condition_mask, :]
+
+# %% [markdown]
+# # --- Preprocessing and Quality Control (QC) ---
 
 # %%
 print("\nStarting preprocessing and QC...")
@@ -290,7 +348,7 @@ summary_stats.to_csv('qc_filtering_summary.csv', index=False)
 print("\nFiltered data is ready for downstream analysis!")
 
 # %% [markdown]
-# # --- 4. Normalization and Feature Selection ---
+# # --- Normalization and Feature Selection ---
 
 # %%
 print("\nNormalizing data and selecting highly variable genes...")
@@ -325,7 +383,6 @@ sc.pp.scale(adata, max_value=10)
 
 # Principal component analysis (PCA)
 sc.tl.pca(adata, svd_solver='arpack')
-sc.pl.pca(adata, save='_pca.png')
 sc.pl.pca_variance_ratio(adata, log=True, save='_pca_variance_ratio.png')
 
 # %% [markdown]
@@ -337,12 +394,9 @@ print("\nClustering and visualization...")
 # Computing the neighborhood graph
 sc.pp.neighbors(adata, n_neighbors=10, n_pcs=40)
 
-# Embedding the neighborhood graph using UMAP
-sc.tl.umap(adata)
-sc.pl.umap(adata, save='_umap_markers.png')
-
 # Clustering the neighborhood graph using the Leiden algorithm
 sc.tl.leiden(adata)
+sc.tl.umap(adata)
 sc.pl.umap(adata, color=['leiden'], save='_umap_leiden.png')
 
 # %% [markdown]
@@ -364,27 +418,6 @@ adata.obsm['X_umap_csv'] = aligned_df[['UMAP-1', 'UMAP-2']].values
 sc.pl.embedding(adata, basis='X_umap_csv', color=['leiden'], save='_umap_csv_leiden.png')
 
 # %% [markdown]
-# # --- 8. Add Metadata from the Downloaded CSV File ---
-
-# %%
-metadata_csv_file = './LibraryID.csv'
-
-# %%
-print(f"\n--- Step 8: Loading metadata from '{metadata_csv_file}' ---")
-metadata_df = pd.read_csv(metadata_csv_file)
-metadata_df.set_index('Barcode', inplace=True)
-adata.obs = adata.obs.join(metadata_df)
-
-if 'LibraryID' not in adata.obs.columns:
-    raise ValueError("'LibraryID' column not found after loading CSV.")
-if adata.obs['LibraryID'].isnull().any():
-    n_missing = adata.obs['LibraryID'].isnull().sum()
-    print(f"WARNING: {n_missing} cells did not have a matching barcode in the CSV file.")
-
-print("\nSuccessfully added metadata from CSV. New adata.obs:")
-print(adata.obs.head())
-
-# %% [markdown]
 # # --- Save Results ---
 
 # %%
@@ -396,25 +429,6 @@ print(adata)
 adata.write('processed_data.h5ad')
 print("\nProcessed data saved to 'processed_data.h5ad'")
 
-# %% [markdown]
-# # --- 9. Subset to Wild-Type Nuclei and Analyze SNRPN/snord116 Expression ---
-
-# %%
-print("\n--- Step 9: Subsetting to wild-type nuclei and analyzing SNRPN/snord116 expression ---")
-
-# Check available LibraryID categories
-print("Available LibraryID categories:")
-print(adata.obs['LibraryID'].value_counts())
-
-# Subset to wild-type nuclei only
-print("\nSubsetting to wild-type nuclei (WT_brain_cortex)...")
-wt_mask = adata.obs['LibraryID'] == 'WT_brain_cortex'
-adata_wt = adata[wt_mask, :].copy()
-
-print(f"Original dataset: {adata.n_obs} cells")
-print(f"Wild-type subset: {adata_wt.n_obs} cells")
-print(f"Percentage of wild-type cells: {100 * adata_wt.n_obs / adata.n_obs:.1f}%")
-
 # %%
 print("\nCreating cell-type resolved visualizations...")
     
@@ -423,31 +437,108 @@ for gene in available_genes:
     print(f"Creating UMAP plot for {gene}...")
     
     # Plot on original UMAP
-    sc.pl.umap(adata_wt, color=gene, save=f'_wt_{gene}_expression.png',
-                title=f'{gene} expression (WT nuclei)')
+    sc.pl.umap(adata, color=gene, save=f'_{gene}_expression.png',
+                title=f'{gene} expression (WT nuclei)', color_map='Reds')
+
+# %%
+print("\nCreating cell-type resolved visualizations...")
+    
+# UMAP plots colored by gene expression
+for gene in available_genes:
+    print(f"Creating UMAP plot for {gene}...")
     
     # Plot on CSV UMAP if available
-    if 'X_umap_csv' in adata_wt.obsm.keys():
-        sc.pl.embedding(adata_wt, basis='X_umap_csv', color=gene,
-                        save=f'_wt_csv_{gene}_expression.png',
-                        title=f'{gene} expression (WT nuclei, CSV UMAP)')
+    if 'X_umap_csv' in adata.obsm.keys():
+        sc.pl.embedding(adata, basis='X_umap_csv', color=gene,
+                        save=f'_csv_{gene}_expression.png',
+                        title=f'{gene} expression (WT nuclei, CSV UMAP)', color_map='Reds')
 
 # %%
 # Create dot plot showing expression across clusters
 print("\nCreating dot plot for cluster-resolved expression...")
-sc.pl.dotplot(adata_wt, available_genes, groupby='leiden',
-                save=f'_wt_snrpn_snord_dotplot.png')
+sc.pl.dotplot(adata, available_genes, groupby='leiden',
+                save=f'_snrpn_snord_dotplot.png')
 
 # %%
 # Create violin plot
 print("\nCreating violin plot for cluster-resolved expression...")
 sc.settings.set_figure_params(figsize=(12, 6), dpi=80)
-sc.pl.violin(adata_wt, available_genes, groupby='leiden',
-             save=f'_wt_snrpn_snord_violin.png')
+sc.pl.violin(adata, available_genes, groupby='leiden',
+             save=f'_snrpn_snord_violin.png')
 
 # %%
-global_max = adata_wt[:, :].X.toarray().flatten().max()
+global_max = adata[:, :].X.toarray().flatten().max()
 print(f"Global Mean expression: {global_max:.3f}")
+
+# %%
+target_gene = 'Snrpn'
+
+print(f"\nExpression summary statistics for {target_gene}:")
+
+gene_expr_overall = adata[:, target_gene].X.toarray().flatten()
+expressing_cells_overall = (gene_expr_overall > 0).sum()
+total_cells_overall = len(gene_expr_overall)
+mean_expr_overall = gene_expr_overall.mean()
+mean_expr_in_expressing_overall = gene_expr_overall[gene_expr_overall > 0].mean() if expressing_cells_overall > 0 else 0
+max_expr_overall = gene_expr_overall.max()
+
+print("\nOverall Dataset:")
+print(f"  Cells expressing {target_gene}: {expressing_cells_overall}/{total_cells_overall} ({100*expressing_cells_overall/total_cells_overall:.1f}%)")
+print(f"  Mean expression (all cells): {mean_expr_overall:.3f}")
+print(f"  Mean expression (expressing cells only): {mean_expr_in_expressing_overall:.3f}")
+print(f"  Max expression: {max_expr_overall:.3f}")
+
+if 'leiden' in adata.obs.columns:
+    print("\nBy Leiden Cluster:")
+    for cluster in sorted(adata.obs['leiden'].cat.categories):
+        adata_cluster = adata[adata.obs['leiden'] == cluster, :]
+        gene_expr_cluster = adata_cluster[:, target_gene].X.toarray().flatten()
+        expressing_cells_cluster = (gene_expr_cluster > 0).sum()
+        total_cells_cluster = len(gene_expr_cluster)
+        mean_expr_cluster = gene_expr_cluster.mean()
+        mean_expr_in_expressing_cluster = gene_expr_cluster[gene_expr_cluster > 0].mean() if expressing_cells_cluster > 0 else 0
+        max_expr_cluster = gene_expr_cluster.max()
+
+        print(f"  Cluster {cluster}:")
+        print(f"    Cells expressing {target_gene}: {expressing_cells_cluster}/{total_cells_cluster} ({100*expressing_cells_cluster/total_cells_cluster:.1f}%)")
+        print(f"    Mean expression (all cells): {mean_expr_cluster:.3f}")
+        print(f"    Mean expression (expressing cells only): {mean_expr_in_expressing_cluster:.3f}")
+        print(f"    Max expression: {max_expr_cluster:.3f}")
+
+# %%
+target_gene = 'Rbfox3'
+
+print(f"\nExpression summary statistics for {target_gene}:")
+
+gene_expr_overall = adata[:, target_gene].X.toarray().flatten()
+expressing_cells_overall = (gene_expr_overall > 0).sum()
+total_cells_overall = len(gene_expr_overall)
+mean_expr_overall = gene_expr_overall.mean()
+mean_expr_in_expressing_overall = gene_expr_overall[gene_expr_overall > 0].mean() if expressing_cells_overall > 0 else 0
+max_expr_overall = gene_expr_overall.max()
+
+print("\nOverall Dataset:")
+print(f"  Cells expressing {target_gene}: {expressing_cells_overall}/{total_cells_overall} ({100*expressing_cells_overall/total_cells_overall:.1f}%)")
+print(f"  Mean expression (all cells): {mean_expr_overall:.3f}")
+print(f"  Mean expression (expressing cells only): {mean_expr_in_expressing_overall:.3f}")
+print(f"  Max expression: {max_expr_overall:.3f}")
+
+if 'leiden' in adata.obs.columns:
+    print("\nBy Leiden Cluster:")
+    for cluster in sorted(adata.obs['leiden'].cat.categories):
+        adata_cluster = adata[adata.obs['leiden'] == cluster, :]
+        gene_expr_cluster = adata_cluster[:, target_gene].X.toarray().flatten()
+        expressing_cells_cluster = (gene_expr_cluster > 0).sum()
+        total_cells_cluster = len(gene_expr_cluster)
+        mean_expr_cluster = gene_expr_cluster.mean()
+        mean_expr_in_expressing_cluster = gene_expr_cluster[gene_expr_cluster > 0].mean() if expressing_cells_cluster > 0 else 0
+        max_expr_cluster = gene_expr_cluster.max()
+
+        print(f"  Cluster {cluster}:")
+        print(f"    Cells expressing {target_gene}: {expressing_cells_cluster}/{total_cells_cluster} ({100*expressing_cells_cluster/total_cells_cluster:.1f}%)")
+        print(f"    Mean expression (all cells): {mean_expr_cluster:.3f}")
+        print(f"    Mean expression (expressing cells only): {mean_expr_in_expressing_cluster:.3f}")
+        print(f"    Max expression: {max_expr_cluster:.3f}")
 
 # %%
 # Summary statistics
@@ -463,126 +554,5 @@ for gene in available_genes:
     print(f"  Expressing cells: {expressing_cells}/{total_cells} ({100*expressing_cells/total_cells:.1f}%)")
     print(f"  Mean expression: {mean_expr:.3f}")
     print(f"  Max expression: {max_expr:.3f}")
-
-# %%
-# Create comparison plot between WT and mutant if both are present
-print("\nCreating comparison between WT and Ube3a mutant...")
-
-# Create a combined plot for specific gene
-fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-
-for i, condition in enumerate(['WT_brain_cortex', 'Ube3a_mut_brain_cortex']):
-    condition_mask = adata.obs['LibraryID'] == condition
-    adata_condition = adata[condition_mask, :].copy()
-    
-    # Plot first available gene
-    gene = available_genes[0]
-    if gene in adata_condition.var_names:
-        # Get expression of target gene across ALL cells (including zeros)
-        gene_expr = adata_condition[:, gene].X.toarray().flatten()
-        
-        # Calculate mean expression of all genes, excluding genes with zero expression
-        if hasattr(adata_condition.X, 'A1'):
-            all_gene_means = np.array(adata_condition.X.mean(axis=0)).flatten()
-        else:
-            all_gene_means = adata_condition.X.mean(axis=0)
-        
-        # Filter out genes with zero mean expression
-        expressed_genes_means = all_gene_means[all_gene_means > 0]
-        
-        # Get mean expression of our target gene ONLY in expressing cells
-        expressing_cells_mask = gene_expr > 0
-        target_gene_mean = np.mean(gene_expr[expressing_cells_mask]) if expressing_cells_mask.sum() > 0 else 0
-        
-        # Calculate percentile rank of target gene among expressed genes only
-        if target_gene_mean > 0:
-            gene_rank_percentile = (expressed_genes_means < target_gene_mean).sum() / len(expressed_genes_means) * 100
-        else:
-            gene_rank_percentile = 0
-        
-        # Plot histogram of target gene expression across ALL cells
-        axes[i].hist(gene_expr, bins=50, alpha=0.7,
-                    color='lightgreen', edgecolor='black',
-                    label=f'{gene}')
-        
-        # Add vertical lines for comparison
-        if target_gene_mean > 0:
-            axes[i].axvline(target_gene_mean, color='red', linestyle='--',
-                            label=f'{gene} mean (expressing): {target_gene_mean:.3f}')
-        axes[i].axvline(np.mean(expressed_genes_means), color='blue', linestyle='--',
-                        label=f'Expressed genes mean: {np.mean(expressed_genes_means):.3f}')
-        
-        axes[i].set_xlabel(f'{gene} expression (log counts)')
-        axes[i].set_ylabel('Number of cells')
-        axes[i].set_title(f'{gene} vs Expressed Genes - {condition.replace("_", " ").title()}')
-        axes[i].legend()
-        
-        # Add text with comparison statistics
-        expressing_cells = expressing_cells_mask.sum()
-        total_cells = len(adata_condition)
-        expressing_pct = (expressing_cells / total_cells) * 100
-        
-        stats_text = f'Cells expressing: {expressing_cells}/{total_cells} ({expressing_pct:.1f}%)\n'
-        if target_gene_mean > 0:
-            stats_text += f'Gene rank: {gene_rank_percentile:.1f}th percentile\n'
-            stats_text += f'Mean expr ratio: {target_gene_mean/np.mean(expressed_genes_means):.2f}x\n'
-        else:
-            stats_text += f'Gene not expressed\n'
-        stats_text += f'Expressed genes: {len(expressed_genes_means)}/{len(all_gene_means)}'
-        
-        axes[i].text(0.05, 0.95, stats_text,
-                    transform=axes[i].transAxes, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-
-plt.tight_layout()
-plt.savefig(f'figures/wt_vs_mut_{available_genes[0]}_comparison.png',
-            dpi=300, bbox_inches='tight')
-plt.show()
-
-
-# %%
-
-# Print detailed gene expression comparison
-print(f"\nDetailed expression comparison for {available_genes[0]}:")
-for condition in ['WT_brain_cortex', 'Ube3a_mut_brain_cortex']:
-    condition_mask = adata.obs['LibraryID'] == condition
-    adata_condition = adata[condition_mask, :].copy()
-    
-    if len(adata_condition) > 0:
-        gene = available_genes[0]
-        if gene in adata_condition.var_names:
-            gene_expr = adata_condition[:, gene].X.toarray().flatten()
-            
-            # Calculate all gene means for comparison, excluding zero-expression genes
-            if hasattr(adata_condition.X, 'A1'):
-                all_gene_means = np.array(adata_condition.X.mean(axis=0)).flatten()
-            else:
-                all_gene_means = adata_condition.X.mean(axis=0)
-            
-            # Filter out genes with zero mean expression
-            expressed_genes_means = all_gene_means[all_gene_means > 0]
-            
-            # Calculate target gene mean only in expressing cells
-            expressing_cells_mask = gene_expr > 0
-            target_gene_mean = np.mean(gene_expr[expressing_cells_mask]) if expressing_cells_mask.sum() > 0 else 0
-            
-            if target_gene_mean > 0:
-                gene_rank = (expressed_genes_means < target_gene_mean).sum()
-                percentile = (gene_rank / len(expressed_genes_means)) * 100
-            else:
-                gene_rank = 0
-                percentile = 0
-            
-            print(f"\n{condition.replace('_', ' ').title()}:")
-            print(f"  Cells expressing {gene}: {expressing_cells_mask.sum()}/{len(gene_expr)} ({expressing_cells_mask.sum()/len(gene_expr)*100:.1f}%)")
-            if target_gene_mean > 0:
-                print(f"  {gene} mean expression (expressing cells only): {target_gene_mean:.4f}")
-                print(f"  Expressed genes mean: {np.mean(expressed_genes_means):.4f}")
-                print(f"  {gene} rank among expressed genes: {gene_rank}/{len(expressed_genes_means)} ({percentile:.1f}th percentile)")
-                print(f"  Expression ratio vs expressed genes average: {target_gene_mean/np.mean(expressed_genes_means):.2f}x")
-            else:
-                print(f"  {gene} is not expressed in this condition")
-            print(f"  Total genes in dataset: {len(all_gene_means)}")
-            print(f"  Expressed genes: {len(expressed_genes_means)} ({len(expressed_genes_means)/len(all_gene_means)*100:.1f}%)")
 
 
