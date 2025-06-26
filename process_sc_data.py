@@ -176,10 +176,9 @@ adata.obs.head()
 
 # %%
 # Extract only the cluster numbers from the 'cluster' column
-adata.obs['cluster'] = adata.obs['cluster'].str.extract('(\d+)')
+adata.obs['cluster'] = adata.obs['cluster'].astype(str).str.extract(r'(\d+)')
 print("Updated cluster column:")
 adata.obs.head()
-
 
 # %% [markdown]
 # # --- Preprocessing and Quality Control (QC) ---
@@ -393,6 +392,10 @@ adata.var.loc[adata.var_names.isin(available_genes), 'highly_variable'] = True
 # Slice the AnnData object to keep only highly variable genes
 adata = adata[:, adata.var.highly_variable]
 
+# Save normalized (not scaled) data for downstream use
+adata.write('normalized_data.h5ad')
+print("Saved normalized (not scaled) data to 'normalized_data.h5ad'.")
+
 print("Finished normalization and feature selection.")
 
 # %% [markdown]
@@ -459,7 +462,7 @@ cluster_mapping = {
     "Meningi" : ["18"],
     "Oligos" : ["16", "14"],
     "Unk" : ["8", "1", "17"],
-    "CC_deepr" : ["4"],
+    "CC_deeper" : ["4"],
     "GABA" : ["5"],
     "Micro" : ["12"],
     "OPCs" : ["15"]
@@ -475,7 +478,6 @@ for cell_type, clusters in cluster_mapping.items():
 
 # Display the first few rows to verify
 adata.obs[['cluster', 'cell_type']].head()
-
 
 # %%
 adata.obs.cell_type.value_counts()
@@ -592,5 +594,189 @@ for gene in available_genes:
     print(f"  Expressing cells: {expressing_cells}/{total_cells} ({100*expressing_cells/total_cells:.1f}%)")
     print(f"  Mean expression: {mean_expr:.3f}")
     print(f"  Max expression: {max_expr:.3f}")
+
+# %% [markdown]
+# # Continuation
+
+# %%
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy import stats
+import scanpy as sc
+
+# %%
+# Load the normalized (but not scaled) data
+adata = sc.read_h5ad('normalized_data.h5ad')
+adata
+
+# %%
+cluster_mapping = {
+    "Astro" : ["11"],
+    "CC_upper" : ["6", "3", "2", "13", "9", "10", "7"],
+    "Meningi" : ["18"],
+    "Oligos" : ["16", "14"],
+    "Unk" : ["8", "1", "17"],
+    "CC_deeper" : ["4"],
+    "GABA" : ["5"],
+    "Micro" : ["12"],
+    "OPCs" : ["15"]
+}
+adata.obs['cell_type'] = 'Unasigned'  # Initialize with default value
+for cell_type, clusters in cluster_mapping.items():
+    mask = adata.obs['cluster'].isin(clusters)
+    adata.obs.loc[mask, 'cell_type'] = cell_type
+
+# %%
+adata.obs['cell_type'].unique()
+
+# %%
+adata = adata[adata.obs['cell_type'] != 'Unk']
+
+# %%
+snrpn_expression = adata[:, 'Snrpn'].X.toarray().flatten()
+
+# Create a dataframe with cell types and SNRPN expression
+df = pd.DataFrame({
+    'cell_type': adata.obs['cell_type'],
+    'SNRPN_expression': snrpn_expression
+})
+
+# Define rbfox3_negativeexpressing groups
+rbfox3_groups = ['GABA', 'CC_upper', 'CC_deeper']
+
+# Create a binary grouping for statistical comparison
+df['rbfox3_status'] = df['cell_type'].apply(
+    lambda x: 'rbfox3_positive' if x in rbfox3_groups else 'rbfox3_negative'
+)
+
+# Perform statistical tests
+# 1. Overall comparison between rbfox3_positive and rbfox3_negative groups
+rbfox3_pos = df[df['rbfox3_status'] == 'rbfox3_positive']['SNRPN_expression']
+rbfox3_neg = df[df['rbfox3_status'] == 'rbfox3_negative']['SNRPN_expression']
+
+# Mann-Whitney U test (non-parametric)
+statistic, pvalue = stats.mannwhitneyu(rbfox3_pos, rbfox3_neg, alternative='greater')
+
+# 2. Individual comparisons for each cell type
+cell_types = df['cell_type'].unique()
+pvalues_dict = {}
+
+for ct in cell_types:
+    if ct in rbfox3_groups:
+        ct_expression = df[df['cell_type'] == ct]['SNRPN_expression']
+        other_expression = df[~df['cell_type'].isin(rbfox3_groups)]['SNRPN_expression']
+        _, p = stats.mannwhitneyu(ct_expression, other_expression, alternative='greater')
+        pvalues_dict[ct] = p
+
+# %%
+# Create the visualization
+fig, ax1 = plt.subplots(figsize=(10, 6))
+
+# Plot 1: Box plot by cell type
+# Order cell types to group rbfox3_positive together
+ordered_types = rbfox3_groups + [ct for ct in cell_types if ct not in rbfox3_groups]
+df_ordered = df.set_index('cell_type').loc[ordered_types].reset_index()
+
+# Create box plot with explicit colors
+colors = ['salmon' if ct in rbfox3_groups else 'lightblue' for ct in ordered_types]
+box_plot = sns.boxplot(data=df_ordered, x='cell_type', y='SNRPN_expression', hue='cell_type', ax=ax1, palette=colors, legend=False)
+
+# Add statistical annotations
+y_max = df['SNRPN_expression'].max()
+y_range = df['SNRPN_expression'].max() - df['SNRPN_expression'].min()
+
+# Add individual p-values for rbfox3_positive groups
+for i, ct in enumerate(ordered_types):
+    if ct in rbfox3_groups and ct in pvalues_dict:
+        p = pvalues_dict[ct]
+        if p < 0.001:
+            sig_text = '***'
+        elif p < 0.01:
+            sig_text = '**'
+        elif p < 0.05:
+            sig_text = '*'
+        else:
+            sig_text = 'ns'
+        
+        ax1.text(i, y_max + 0.05 * y_range, sig_text, 
+                ha='center', va='bottom', fontsize=12)
+
+ax1.set_xticks(range(len(ordered_types)))
+ax1.set_xticklabels(ordered_types, rotation=45, ha='right')
+ax1.set_title('SNRPN Expression by Cell Type\n(rbfox3_positive groups in salmon, rbfox3_negative in lightblue)')
+ax1.set_ylabel('SNRPN Expression')
+
+plt.tight_layout()
+plt.show()
+
+# %%
+# Print detailed statistics
+print("Statistical Analysis Summary:")
+print("=" * 50)
+print(f"\nOverall comparison (Mann-Whitney U test):")
+print(f"rbfox3_positive groups have {'significantly' if pvalue < 0.05 else 'not significantly'} "
+      f"higher SNRPN expression (p = {pvalue:.4f})")
+
+print(f"\nMean SNRPN expression:")
+print(f"rbfox3_positive groups: {rbfox3_pos.mean():.3f} ± {rbfox3_pos.std():.3f}")
+print(f"rbfox3_negative groups: {rbfox3_neg.mean():.3f} ± {rbfox3_neg.std():.3f}")
+
+print(f"\nIndividual group comparisons (vs all rbfox3_negative groups):")
+for ct in rbfox3_groups:
+    if ct in pvalues_dict:
+        p = pvalues_dict[ct]
+        print(f"{ct}: p = {p:.4f} {'*' if p < 0.05 else '(ns)'}")
+
+# %%
+fig, ax3 = plt.subplots(figsize=(10, 6))
+
+# Calculate means and SEM for each cell type - fix the FutureWarning
+means_by_type = df.groupby('cell_type', observed=False)['SNRPN_expression'].mean()
+sems_by_type = df.groupby('cell_type', observed=False)['SNRPN_expression'].sem()
+
+# Reorder to match previous plot
+means_ordered = means_by_type[ordered_types]
+sems_ordered = sems_by_type[ordered_types]
+
+# Create bar plot
+bars = ax3.bar(range(len(ordered_types)), means_ordered, yerr=sems_ordered, 
+                capsize=5, color=colors, edgecolor='black', linewidth=1.5)
+
+# Add significance stars
+for i, ct in enumerate(ordered_types):
+    if ct in rbfox3_groups and ct in pvalues_dict:
+        p = pvalues_dict[ct]
+        if p < 0.001:
+            sig_text = '***'
+        elif p < 0.01:
+            sig_text = '**'
+        elif p < 0.05:
+            sig_text = '*'
+        else:
+            sig_text = 'ns'
+        
+        ax3.text(i, means_ordered.iloc[i] + sems_ordered.iloc[i] + 0.05 * y_range, 
+                sig_text, ha='center', va='bottom', fontsize=14, weight='bold')
+
+ax3.set_xticks(range(len(ordered_types)))
+ax3.set_xticklabels(ordered_types, rotation=45, ha='right')
+ax3.set_ylabel('Mean SNRPN Expression (± SEM)')
+ax3.set_title('Mean SNRPN Expression by Cell Type with Statistical Significance')
+
+# Add legend
+from matplotlib.patches import Patch
+legend_elements = [Patch(facecolor='salmon', label='rbfox3_positive groups'),
+                   Patch(facecolor='lightblue', label='rbfox3_negative groups')]
+ax3.legend(handles=legend_elements, loc='upper right')
+
+plt.tight_layout()
+plt.show()
+
+
+
+# %%
+
 
 
