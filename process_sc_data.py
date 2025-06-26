@@ -158,6 +158,29 @@ print(adata.obs.head())
 condition_mask = adata.obs['LibraryID'] == 'WT_brain_cortex'
 adata= adata[condition_mask, :]
 
+# %%
+adata
+
+# %%
+cluster_labels = pd.read_csv("GEX_Graph-Based.csv")
+cluster_labels.head()
+
+# %%
+cluster_labels.set_index('Barcode', inplace=True)
+adata.obs = adata.obs.join(cluster_labels)
+
+# %%
+# Rename the 'GEX Graph-based' column to 'cluster'
+adata.obs = adata.obs.rename(columns={'GEX Graph-based': 'cluster'})
+adata.obs.head()
+
+# %%
+# Extract only the cluster numbers from the 'cluster' column
+adata.obs['cluster'] = adata.obs['cluster'].str.extract('(\d+)')
+print("Updated cluster column:")
+adata.obs.head()
+
+
 # %% [markdown]
 # # --- Preprocessing and Quality Control (QC) ---
 
@@ -396,8 +419,10 @@ sc.pp.neighbors(adata, n_neighbors=10, n_pcs=40)
 
 # Clustering the neighborhood graph using the Leiden algorithm
 sc.tl.leiden(adata)
-sc.tl.umap(adata)
-sc.pl.umap(adata, color=['leiden'], save='_umap_leiden.png')
+# sc.tl.umap(adata)
+
+# %%
+# sc.pl.umap(adata, color=['leiden'], save='_umap_leiden.png')
 
 # %% [markdown]
 # # --- 7. Add alternative UMAP projection ---
@@ -412,10 +437,53 @@ umap_df = pd.read_csv('umap_projection.csv', index_col=0)
 aligned_df = umap_df.reindex(adata.obs_names)
 
 # Add the UMAP coordinates to the AnnData object
-adata.obsm['X_umap_csv'] = aligned_df[['UMAP-1', 'UMAP-2']].values
+adata.obsm['X_umap'] = aligned_df[['UMAP-1', 'UMAP-2']].values
 
 # Plot the new UMAP projection
-sc.pl.embedding(adata, basis='X_umap_csv', color=['leiden'], save='_umap_csv_leiden.png')
+# sc.pl.embedding(adata, basis='X_umap_csv', color=['leiden'], save='_umap_csv_leiden.png')
+sc.pl.umap(adata, color=['leiden'], save='_umap_leiden.png')
+
+# %%
+# Plot the new UMAP projection
+# sc.pl.embedding(adata, basis='X_umap_csv', color=['cluster'], save='_umap_csv_cluster.png', legend_loc='on data')
+sc.pl.umap(adata, color=['cluster'], save='_umap_cluster.png', legend_loc='on data')
+
+# %%
+from IPython.display import Image
+Image(filename='clusters.png')
+
+# %%
+cluster_mapping = {
+    "Astro" : ["11"],
+    "CC_upper" : ["6", "3", "2", "13", "9", "10", "7"],
+    "Meningi" : ["18"],
+    "Oligos" : ["16", "14"],
+    "Unk" : ["8", "1", "17"],
+    "CC_deepr" : ["4"],
+    "GABA" : ["5"],
+    "Micro" : ["12"],
+    "OPCs" : ["15"]
+}
+
+# Create cell_type column based on cluster mapping
+adata.obs['cell_type'] = 'Unasigned'  # Initialize with default value
+
+# Map clusters to cell types
+for cell_type, clusters in cluster_mapping.items():
+    mask = adata.obs['cluster'].isin(clusters)
+    adata.obs.loc[mask, 'cell_type'] = cell_type
+
+# Display the first few rows to verify
+adata.obs[['cluster', 'cell_type']].head()
+
+
+# %%
+adata.obs.cell_type.value_counts()
+
+# %%
+# Plot the new UMAP projection
+# sc.pl.embedding(adata, basis='X_umap_csv', color=['cell_type'], save='_umap_csv_cluster.png', legend_loc='on data')
+sc.pl.umap(adata, color=['cell_type'], save='_umap_cluster.png', legend_loc='on data')
 
 # %% [markdown]
 # # --- Save Results ---
@@ -441,29 +509,29 @@ for gene in available_genes:
                 title=f'{gene} expression (WT nuclei)', color_map='Reds')
 
 # %%
-print("\nCreating cell-type resolved visualizations...")
+# print("\nCreating cell-type resolved visualizations...")
     
-# UMAP plots colored by gene expression
-for gene in available_genes:
-    print(f"Creating UMAP plot for {gene}...")
+# # UMAP plots colored by gene expression
+# for gene in available_genes:
+#     print(f"Creating UMAP plot for {gene}...")
     
-    # Plot on CSV UMAP if available
-    if 'X_umap_csv' in adata.obsm.keys():
-        sc.pl.embedding(adata, basis='X_umap_csv', color=gene,
-                        save=f'_csv_{gene}_expression.png',
-                        title=f'{gene} expression (WT nuclei, CSV UMAP)', color_map='Reds')
+#     # Plot on CSV UMAP if available
+#     if 'X_umap_csv' in adata.obsm.keys():
+#         sc.pl.embedding(adata, basis='X_umap_csv', color=gene,
+#                         save=f'_csv_{gene}_expression.png',
+#                         title=f'{gene} expression (WT nuclei, CSV UMAP)', color_map='Reds')
 
 # %%
 # Create dot plot showing expression across clusters
 print("\nCreating dot plot for cluster-resolved expression...")
-sc.pl.dotplot(adata, available_genes, groupby='leiden',
+sc.pl.dotplot(adata, available_genes, groupby='cell_type',
                 save=f'_snrpn_snord_dotplot.png')
 
 # %%
 # Create violin plot
 print("\nCreating violin plot for cluster-resolved expression...")
 sc.settings.set_figure_params(figsize=(12, 6), dpi=80)
-sc.pl.violin(adata, available_genes, groupby='leiden',
+sc.pl.violin(adata, available_genes, groupby='cell_type',
              save=f'_snrpn_snord_violin.png')
 
 # %%
@@ -471,80 +539,50 @@ global_max = adata[:, :].X.toarray().flatten().max()
 print(f"Global Mean expression: {global_max:.3f}")
 
 # %%
-target_gene = 'Snrpn'
+def gene_expression_summary(adata, target_gene):
+    print(f"\nExpression summary statistics for {target_gene}:")
 
-print(f"\nExpression summary statistics for {target_gene}:")
+    gene_expr_overall = adata[:, target_gene].X.toarray().flatten()
+    expressing_cells_overall = (gene_expr_overall > 0).sum()
+    total_cells_overall = len(gene_expr_overall)
+    mean_expr_overall = gene_expr_overall.mean()
+    mean_expr_in_expressing_overall = gene_expr_overall[gene_expr_overall > 0].mean() if expressing_cells_overall > 0 else 0
+    max_expr_overall = gene_expr_overall.max()
 
-gene_expr_overall = adata[:, target_gene].X.toarray().flatten()
-expressing_cells_overall = (gene_expr_overall > 0).sum()
-total_cells_overall = len(gene_expr_overall)
-mean_expr_overall = gene_expr_overall.mean()
-mean_expr_in_expressing_overall = gene_expr_overall[gene_expr_overall > 0].mean() if expressing_cells_overall > 0 else 0
-max_expr_overall = gene_expr_overall.max()
+    print("\nOverall Dataset:")
+    print(f"  Cells expressing {target_gene}: {expressing_cells_overall}/{total_cells_overall} ({100*expressing_cells_overall/total_cells_overall:.1f}%)")
+    print(f"  Mean expression (all cells): {mean_expr_overall:.3f}")
+    print(f"  Mean expression (expressing cells only): {mean_expr_in_expressing_overall:.3f}")
+    print(f"  Max expression: {max_expr_overall:.3f}")
 
-print("\nOverall Dataset:")
-print(f"  Cells expressing {target_gene}: {expressing_cells_overall}/{total_cells_overall} ({100*expressing_cells_overall/total_cells_overall:.1f}%)")
-print(f"  Mean expression (all cells): {mean_expr_overall:.3f}")
-print(f"  Mean expression (expressing cells only): {mean_expr_in_expressing_overall:.3f}")
-print(f"  Max expression: {max_expr_overall:.3f}")
+    if 'cell_type' in adata.obs.columns:
+        print("\nBy cell_type Cluster:")
+        for cluster in sorted(adata.obs['cell_type'].cat.categories):
+            adata_cluster = adata[adata.obs['cell_type'] == cluster, :]
+            gene_expr_cluster = adata_cluster[:, target_gene].X.toarray().flatten()
+            expressing_cells_cluster = (gene_expr_cluster > 0).sum()
+            total_cells_cluster = len(gene_expr_cluster)
+            mean_expr_cluster = gene_expr_cluster.mean()
+            mean_expr_in_expressing_cluster = gene_expr_cluster[gene_expr_cluster > 0].mean() if expressing_cells_cluster > 0 else 0
+            max_expr_cluster = gene_expr_cluster.max()
 
-if 'leiden' in adata.obs.columns:
-    print("\nBy Leiden Cluster:")
-    for cluster in sorted(adata.obs['leiden'].cat.categories):
-        adata_cluster = adata[adata.obs['leiden'] == cluster, :]
-        gene_expr_cluster = adata_cluster[:, target_gene].X.toarray().flatten()
-        expressing_cells_cluster = (gene_expr_cluster > 0).sum()
-        total_cells_cluster = len(gene_expr_cluster)
-        mean_expr_cluster = gene_expr_cluster.mean()
-        mean_expr_in_expressing_cluster = gene_expr_cluster[gene_expr_cluster > 0].mean() if expressing_cells_cluster > 0 else 0
-        max_expr_cluster = gene_expr_cluster.max()
-
-        print(f"  Cluster {cluster}:")
-        print(f"    Cells expressing {target_gene}: {expressing_cells_cluster}/{total_cells_cluster} ({100*expressing_cells_cluster/total_cells_cluster:.1f}%)")
-        print(f"    Mean expression (all cells): {mean_expr_cluster:.3f}")
-        print(f"    Mean expression (expressing cells only): {mean_expr_in_expressing_cluster:.3f}")
-        print(f"    Max expression: {max_expr_cluster:.3f}")
+            print(f"  Cluster {cluster}:")
+            print(f"    Cells expressing {target_gene}: {expressing_cells_cluster}/{total_cells_cluster} ({100*expressing_cells_cluster/total_cells_cluster:.1f}%)")
+            print(f"    Mean expression (all cells): {mean_expr_cluster:.3f}")
+            print(f"    Mean expression (expressing cells only): {mean_expr_in_expressing_cluster:.3f}")
+            print(f"    Max expression: {max_expr_cluster:.3f}")
 
 # %%
-target_gene = 'Rbfox3'
+gene_expression_summary(adata, 'Snrpn')
 
-print(f"\nExpression summary statistics for {target_gene}:")
-
-gene_expr_overall = adata[:, target_gene].X.toarray().flatten()
-expressing_cells_overall = (gene_expr_overall > 0).sum()
-total_cells_overall = len(gene_expr_overall)
-mean_expr_overall = gene_expr_overall.mean()
-mean_expr_in_expressing_overall = gene_expr_overall[gene_expr_overall > 0].mean() if expressing_cells_overall > 0 else 0
-max_expr_overall = gene_expr_overall.max()
-
-print("\nOverall Dataset:")
-print(f"  Cells expressing {target_gene}: {expressing_cells_overall}/{total_cells_overall} ({100*expressing_cells_overall/total_cells_overall:.1f}%)")
-print(f"  Mean expression (all cells): {mean_expr_overall:.3f}")
-print(f"  Mean expression (expressing cells only): {mean_expr_in_expressing_overall:.3f}")
-print(f"  Max expression: {max_expr_overall:.3f}")
-
-if 'leiden' in adata.obs.columns:
-    print("\nBy Leiden Cluster:")
-    for cluster in sorted(adata.obs['leiden'].cat.categories):
-        adata_cluster = adata[adata.obs['leiden'] == cluster, :]
-        gene_expr_cluster = adata_cluster[:, target_gene].X.toarray().flatten()
-        expressing_cells_cluster = (gene_expr_cluster > 0).sum()
-        total_cells_cluster = len(gene_expr_cluster)
-        mean_expr_cluster = gene_expr_cluster.mean()
-        mean_expr_in_expressing_cluster = gene_expr_cluster[gene_expr_cluster > 0].mean() if expressing_cells_cluster > 0 else 0
-        max_expr_cluster = gene_expr_cluster.max()
-
-        print(f"  Cluster {cluster}:")
-        print(f"    Cells expressing {target_gene}: {expressing_cells_cluster}/{total_cells_cluster} ({100*expressing_cells_cluster/total_cells_cluster:.1f}%)")
-        print(f"    Mean expression (all cells): {mean_expr_cluster:.3f}")
-        print(f"    Mean expression (expressing cells only): {mean_expr_in_expressing_cluster:.3f}")
-        print(f"    Max expression: {max_expr_cluster:.3f}")
+# %%
+gene_expression_summary(adata, 'Rbfox3')
 
 # %%
 # Summary statistics
 print("\nExpression summary statistics (WT nuclei only):")
 for gene in available_genes:
-    gene_expr = adata_wt[:, gene].X.toarray().flatten()
+    gene_expr = adata[:, gene].X.toarray().flatten()
     expressing_cells = (gene_expr > 0).sum()
     total_cells = len(gene_expr)
     mean_expr = gene_expr.mean()
